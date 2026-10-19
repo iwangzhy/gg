@@ -124,11 +124,43 @@ gg --node ss://YWVzLTEyOC1nY206MQ@example.com:17247 speedtest
 
 **Use subscription**
 
+Subscription URLs may return Clash/Mihomo YAML or JSON directly, or a Base64-encoded configuration or share-link list. gg imports supported nodes from `proxies`; Clash rules, proxy groups, and `proxy-providers` references are not applied. Invalid or unsupported nodes are skipped with a warning.
+
 By default, gg will automatically select the first available node from the subscription:
 
 ```bash
 gg --subscription https://example.com/path/to/sub docker pull caddy
 ```
+
+A Clash configuration can include a VLESS/TCP/Reality node:
+
+```yaml
+proxies:
+  - name: Reality
+    type: vless
+    server: proxy.example.com
+    port: 443
+    uuid: 9cfe9a32-4515-4b6f-805f-1de788c28d95
+    network: tcp
+    tls: true
+    udp: true
+    servername: www.example.com
+    client-fingerprint: chrome
+    flow: xtls-rprx-vision
+    reality-opts:
+      public-key: YOUR_SERVER_PUBLIC_KEY
+      short-id: "0123456789abcdef"
+```
+
+Or use a VLESS share link directly:
+
+```shell
+gg --node 'vless://UUID@proxy.example.com:443?type=tcp&security=reality&encryption=none&sni=www.example.com&fp=chrome&pbk=PUBLIC_KEY&sid=0123456789abcdef&flow=xtls-rprx-vision#Reality' curl https://example.com
+```
+
+Replace the address, UUID, public key, and short ID with your server's values. Reality supports TCP transport, with an empty flow or `xtls-rprx-vision`; the default fingerprint is `chrome`. `allowInsecure` does not disable Reality authentication. Legacy `security=xtls` and `xtls-rprx-direct` return an explicit error.
+
+VLESS can relay UDP over its TCP connection; set `udp: true` for Clash nodes. Vision share links block UDP/443 unless the flow is `xtls-rprx-vision-udp443`; Clash Vision nodes allow it, matching Clash behavior. Cached nodes retain SNI, Reality keys, short IDs, fingerprints, and flow settings.
 
 > ```
 > Using default tag: latest
@@ -326,6 +358,8 @@ complete -c gg -x -a "(__fish_complete_gg_subcommand)"
   - [x] WS
   - [x] TLS
   - [x] GRPC
+  - [x] Reality (VLESS + TCP)
+  - [x] XTLS Vision (VLESS + TCP + TLS/Reality)
 - [x] Shadowsocks
   - [x] AEAD Ciphers
   - [x] Shadowsocks 2022
@@ -340,8 +374,25 @@ complete -c gg -x -a "(__fish_complete_gg_subcommand)"
 ### Subscription
 
 - [x] Base64 (v2rayN, etc.)
-- [x] Clash
+- [x] Clash/Mihomo (plain or Base64-encoded YAML/JSON, including VLESS/Reality nodes)
 - [x] SIP008
 - [ ] Surge
 - [ ] Quantumult
 - [ ] Quantumult X
+
+### Build and test from source
+
+Go 1.25 or newer is required:
+
+```shell
+go build .
+go test ./...
+```
+
+The full application requires Linux. Protocol tests also run on other systems with `go test ./dialer/...`. Set `XRAY_BIN` to an official Xray executable to run local interoperability tests covering Reality/Vision, large HTTPS payloads, UDP, and invalid credentials:
+
+```shell
+XRAY_BIN=/path/to/xray go test ./dialer/v2ray -run XrayInterop -v
+```
+
+For older Xray servers that do not support the current Chrome fingerprint, set `XRAY_FINGERPRINT=chrome_102` in the test environment or `fp=chrome_102` in the node link.

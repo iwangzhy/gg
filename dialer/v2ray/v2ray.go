@@ -3,25 +3,27 @@ package v2ray
 import (
 	"encoding/base64"
 	"fmt"
-	jsoniter "github.com/json-iterator/go"
-	"github.com/mzz2017/gg/common"
-	"github.com/mzz2017/gg/dialer"
-	"github.com/mzz2017/gg/dialer/transport/tls"
-	"github.com/mzz2017/gg/dialer/transport/ws"
-	"github.com/mzz2017/softwind/protocol"
-	"github.com/mzz2017/softwind/transport/grpc"
-	"gopkg.in/yaml.v3"
 	"net"
 	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/daeuniverse/outbound/protocol"
+	jsoniter "github.com/json-iterator/go"
+	"github.com/mzz2017/gg/common"
+	"github.com/mzz2017/gg/dialer"
+	"github.com/mzz2017/gg/dialer/transport/grpc"
+	"github.com/mzz2017/gg/dialer/transport/tls"
+	"github.com/mzz2017/gg/dialer/transport/ws"
+	"gopkg.in/yaml.v3"
 )
 
 func init() {
 	dialer.FromLinkRegister("vmess", NewV2Ray)
 	dialer.FromLinkRegister("vless", NewV2Ray)
 	dialer.FromClashRegister("vmess", NewVMessFromClashObj)
+	dialer.FromClashRegister("vless", NewVLESSFromClashObj)
 }
 
 type V2Ray struct {
@@ -37,6 +39,12 @@ type V2Ray struct {
 	Path          string `json:"path"`
 	TLS           string `json:"tls"`
 	Flow          string `json:"flow,omitempty"`
+	Encryption    string `json:"encryption,omitempty"`
+	Fingerprint   string `json:"fp,omitempty"`
+	PublicKey     string `json:"pbk,omitempty"`
+	ShortID       string `json:"sid,omitempty"`
+	SpiderX       string `json:"spx,omitempty"`
+	UDP           *bool  `json:"udp,omitempty"`
 	Alpn          string `json:"alpn,omitempty"`
 	AllowInsecure bool   `json:"allowInsecure"`
 	V             string `json:"v"`
@@ -65,7 +73,7 @@ func NewV2Ray(link string, opt *dialer.GlobalOption) (*dialer.Dialer, error) {
 	default:
 		return nil, dialer.InvalidParameterErr
 	}
-	if opt.AllowInsecure {
+	if opt != nil && opt.AllowInsecure {
 		s.AllowInsecure = true
 	}
 	return s.Dialer()
@@ -83,6 +91,18 @@ func NewVMessFromClashObj(o *yaml.Node, opt *dialer.GlobalOption) (*dialer.Diale
 }
 
 func (s *V2Ray) Dialer() (data *dialer.Dialer, err error) {
+	if s.Protocol == "vless" {
+		if err := s.validateVLESS(); err != nil {
+			return nil, err
+		}
+		if s.Net == "tcp" {
+			return s.tcpVLESSDialer()
+		}
+	}
+	// 未实现的安全层必须明确报错，否则会意外按明文 TCP 建连。
+	if s.TLS != "" && s.TLS != "none" && s.TLS != "tls" {
+		return nil, fmt.Errorf("%w: security: %v", dialer.UnexpectedFieldErr, s.TLS)
+	}
 	var (
 		d = dialer.SymmetricDirect
 	)
@@ -90,7 +110,7 @@ func (s *V2Ray) Dialer() (data *dialer.Dialer, err error) {
 	switch strings.ToLower(s.Net) {
 	case "ws":
 		scheme := "ws"
-		if s.TLS == "tls" || s.TLS == "xtls" {
+		if s.TLS == "tls" {
 			scheme = "wss"
 		}
 		sni := s.SNI
@@ -102,8 +122,9 @@ func (s *V2Ray) Dialer() (data *dialer.Dialer, err error) {
 			Host:   net.JoinHostPort(s.Add, s.Port),
 			Path:   s.Path,
 			RawQuery: url.Values{
-				"host": []string{s.Host},
-				"sni":  []string{sni},
+				"host":          []string{s.Host},
+				"sni":           []string{sni},
+				"allowInsecure": []string{common.BoolToString(s.AllowInsecure)},
 			}.Encode(),
 		}
 		d, err = ws.NewWs(u.String(), d)
@@ -111,7 +132,7 @@ func (s *V2Ray) Dialer() (data *dialer.Dialer, err error) {
 			return nil, err
 		}
 	case "tcp":
-		if s.TLS == "tls" || s.TLS == "xtls" {
+		if s.TLS == "tls" {
 			sni := s.SNI
 			if sni == "" {
 				sni = s.Host
@@ -142,7 +163,7 @@ func (s *V2Ray) Dialer() (data *dialer.Dialer, err error) {
 			serviceName = "GunService"
 		}
 		d = &grpc.Dialer{
-			NextDialer:    &protocol.DialerConverter{Dialer: d},
+			NextDialer:    d,
 			ServiceName:   serviceName,
 			ServerName:    sni,
 			AllowInsecure: s.AllowInsecure,
@@ -151,15 +172,19 @@ func (s *V2Ray) Dialer() (data *dialer.Dialer, err error) {
 		return nil, fmt.Errorf("%w: network: %v", dialer.UnexpectedFieldErr, s.Net)
 	}
 
-	if d, err = protocol.NewDialer(s.Protocol, d, protocol.Header{
+	next, err := protocol.NewDialer(s.Protocol, dialer.ToOutbound(d), protocol.Header{
 		ProxyAddress: net.JoinHostPort(s.Add, s.Port),
 		Cipher:       "aes-128-gcm",
 		Password:     s.ID,
 		IsClient:     true,
-	}); err != nil {
+		Feature1:     s.Flow,
+	})
+	if err != nil {
 		return nil, err
 	}
-	return dialer.NewDialer(d, true, s.Ps, s.Protocol, s.ExportToURL()), nil
+	d = dialer.FromOutbound(next)
+	supportUDP := s.UDP == nil || *s.UDP
+	return dialer.NewDialer(d, supportUDP, s.Ps, s.Protocol, s.ExportToURL()), nil
 }
 
 func ParseClashVMess(o *yaml.Node) (data *V2Ray, err error) {
@@ -170,7 +195,7 @@ func ParseClashVMess(o *yaml.Node) (data *V2Ray, err error) {
 		EarlyDataHeaderName string            `yaml:"early-data-header-name,omitempty"`
 	}
 	type GrpcOptions struct {
-		GrpcServiceName string `proxy:"grpc-service-name,omitempty"`
+		GrpcServiceName string `yaml:"grpc-service-name,omitempty"`
 	}
 	type HTTP2Options struct {
 		Host []string `proxy:"host,omitempty"`
@@ -246,27 +271,42 @@ func ParseVlessURL(vless string) (data *V2Ray, err error) {
 	if err != nil {
 		return nil, err
 	}
+	if u.Scheme != "vless" || u.User == nil {
+		return nil, fmt.Errorf("%w: expected vless://UUID@server:port", dialer.InvalidParameterErr)
+	}
+	if _, hasPassword := u.User.Password(); hasPassword {
+		return nil, fmt.Errorf("%w: VLESS user info must contain only a UUID", dialer.InvalidParameterErr)
+	}
+	q, err := url.ParseQuery(u.RawQuery)
+	if err != nil {
+		return nil, fmt.Errorf("%w: invalid VLESS query: %v", dialer.InvalidParameterErr, err)
+	}
 	data = &V2Ray{
 		Ps:            u.Fragment,
 		Add:           u.Hostname(),
 		Port:          u.Port(),
-		ID:            u.User.String(),
-		Net:           u.Query().Get("type"),
-		Type:          u.Query().Get("headerType"),
-		SNI:           u.Query().Get("sni"),
-		Host:          u.Query().Get("host"),
-		Path:          u.Query().Get("path"),
-		TLS:           u.Query().Get("security"),
-		Flow:          u.Query().Get("flow"),
-		Alpn:          u.Query().Get("alpn"),
-		AllowInsecure: common.StringToBool(u.Query().Get("allowInsecure")),
+		ID:            u.User.Username(),
+		Net:           q.Get("type"),
+		Type:          q.Get("headerType"),
+		SNI:           q.Get("sni"),
+		Host:          q.Get("host"),
+		Path:          q.Get("path"),
+		TLS:           q.Get("security"),
+		Flow:          q.Get("flow"),
+		Encryption:    q.Get("encryption"),
+		Fingerprint:   q.Get("fp"),
+		PublicKey:     q.Get("pbk"),
+		ShortID:       q.Get("sid"),
+		SpiderX:       q.Get("spx"),
+		Alpn:          q.Get("alpn"),
+		AllowInsecure: common.StringToBool(q.Get("allowInsecure")),
 		Protocol:      "vless",
 	}
 	if data.Net == "" {
 		data.Net = "tcp"
 	}
 	if data.Net == "grpc" {
-		data.Path = u.Query().Get("serviceName")
+		data.Path = q.Get("serviceName")
 	}
 	if data.Type == "" {
 		data.Type = "none"
@@ -274,13 +314,14 @@ func ParseVlessURL(vless string) (data *V2Ray, err error) {
 	if data.TLS == "" {
 		data.TLS = "none"
 	}
-	if data.Flow == "" {
-		data.Flow = "xtls-rprx-direct"
+	if value := q.Get("udp"); value != "" {
+		udp, err := strconv.ParseBool(value)
+		if err != nil {
+			return nil, fmt.Errorf("%w: udp: %v", dialer.InvalidParameterErr, value)
+		}
+		data.UDP = &udp
 	}
-	if data.Type == "mkcp" || data.Type == "kcp" {
-		data.Path = u.Query().Get("seed")
-	}
-	return data, nil
+	return data, data.validateVLESS()
 }
 
 func ParseVmessURL(vmess string) (data *V2Ray, err error) {
@@ -367,6 +408,15 @@ func (s *V2Ray) ExportToURL() string {
 		var query = make(url.Values)
 		common.SetValue(&query, "type", s.Net)
 		common.SetValue(&query, "security", s.TLS)
+		common.SetValue(&query, "encryption", s.Encryption)
+		common.SetValue(&query, "flow", s.Flow)
+		common.SetValue(&query, "fp", s.Fingerprint)
+		common.SetValue(&query, "pbk", s.PublicKey)
+		common.SetValue(&query, "sid", s.ShortID)
+		common.SetValue(&query, "spx", s.SpiderX)
+		if s.UDP != nil {
+			query.Set("udp", strconv.FormatBool(*s.UDP))
+		}
 		switch s.Net {
 		case "websocket", "ws", "http", "h2":
 			common.SetValue(&query, "path", s.Path)
@@ -383,14 +433,10 @@ func (s *V2Ray) ExportToURL() string {
 		}
 		//TODO: QUIC
 		if s.TLS != "none" {
-			common.SetValue(&query, "sni", s.Host) // FIXME: it may be different from ws's host
+			common.SetValue(&query, "sni", s.SNI)
 			common.SetValue(&query, "alpn", s.Alpn)
 			common.SetValue(&query, "allowInsecure", common.BoolToString(s.AllowInsecure))
 		}
-		if s.TLS == "xtls" {
-			common.SetValue(&query, "flow", s.Flow)
-		}
-
 		U := url.URL{
 			Scheme:   "vless",
 			User:     url.User(s.ID),

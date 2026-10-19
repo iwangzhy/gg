@@ -4,10 +4,10 @@ import (
 	"fmt"
 	"github.com/mzz2017/gg/common"
 	"github.com/mzz2017/gg/dialer"
+	"github.com/mzz2017/gg/dialer/transport/grpc"
 	"github.com/mzz2017/gg/dialer/transport/tls"
 	"github.com/mzz2017/gg/dialer/transport/ws"
 	"github.com/mzz2017/softwind/protocol"
-	"github.com/mzz2017/softwind/transport/grpc"
 	"gopkg.in/yaml.v3"
 	"net"
 	"net/url"
@@ -96,7 +96,7 @@ func (s *Trojan) Dialer() (*dialer.Dialer, error) {
 			serviceName = "GunService"
 		}
 		d = &grpc.Dialer{
-			NextDialer:    &protocol.DialerConverter{Dialer: d},
+			NextDialer:    d,
 			ServiceName:   serviceName,
 			ServerName:    s.Sni,
 			AllowInsecure: s.AllowInsecure,
@@ -177,7 +177,7 @@ func ParseClash(o *yaml.Node) (data *Trojan, err error) {
 		EarlyDataHeaderName string            `yaml:"early-data-header-name,omitempty"`
 	}
 	type GrpcOptions struct {
-		GrpcServiceName string `proxy:"grpc-service-name,omitempty"`
+		GrpcServiceName string `yaml:"grpc-service-name,omitempty"`
 	}
 	type TrojanOption struct {
 		Name           string      `yaml:"name"`
@@ -235,6 +235,7 @@ func (t *Trojan) ExportToURL() string {
 		common.SetValue(&q, "encryption", t.Encryption)
 		common.SetValue(&q, "type", t.Type)
 		common.SetValue(&q, "path", t.Path)
+		common.SetValue(&q, "serviceName", t.ServiceName)
 	}
 	u.RawQuery = q.Encode()
 	return u.String()

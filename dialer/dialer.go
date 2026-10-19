@@ -123,6 +123,9 @@ type ContextDialer struct {
 }
 
 func (d *ContextDialer) DialContext(ctx context.Context, network, addr string) (c net.Conn, err error) {
+	if cd, ok := d.Dialer.(proxy.ContextDialer); ok {
+		return cd.DialContext(ctx, network, addr)
+	}
 	var done = make(chan struct{})
 	go func() {
 		c, err = d.Dialer.Dial(network, addr)

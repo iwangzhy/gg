@@ -117,11 +117,43 @@ gg --node ss://YWVzLTEyOC1nY206MQ@example.com:17247 speedtest
 
 **使用订阅地址**
 
+订阅地址可以直接返回 Clash/Mihomo 的 YAML 或 JSON 配置，也支持 Base64 编码的配置和分享链接列表。gg 读取 `proxies` 中支持的节点；不应用 Clash 的规则、代理组或 `proxy-providers` 引用。不支持或无效的节点会跳过并给出提示。
+
 默认情况下 gg 会从你的订阅中自动挑选第一个可用的节点：
 
 ```bash
 gg --subscription https://example.com/path/to/sub docker pull caddy
 ```
+
+例如，可以直接订阅包含以下节点的 Clash 配置文件：
+
+```yaml
+proxies:
+  - name: Reality 节点
+    type: vless
+    server: proxy.example.com
+    port: 443
+    uuid: 9cfe9a32-4515-4b6f-805f-1de788c28d95
+    network: tcp
+    tls: true
+    udp: true
+    servername: www.example.com
+    client-fingerprint: chrome
+    flow: xtls-rprx-vision
+    reality-opts:
+      public-key: YOUR_SERVER_PUBLIC_KEY
+      short-id: "0123456789abcdef"
+```
+
+也可直接使用 VLESS/TCP/Reality 分享链接：
+
+```shell
+gg --node 'vless://UUID@proxy.example.com:443?type=tcp&security=reality&encryption=none&sni=www.example.com&fp=chrome&pbk=PUBLIC_KEY&sid=0123456789abcdef&flow=xtls-rprx-vision#Reality' curl https://example.com
+```
+
+请替换示例中的地址、UUID、公钥和 short ID，使其与服务端一致。Reality 当前支持 TCP 传输，可搭配空 `flow` 或 `xtls-rprx-vision`；指纹默认 `chrome`。`allowInsecure` 不会关闭 Reality 身份校验。旧版 `security=xtls` 和 `xtls-rprx-direct` 不受支持，会明确报错。
+
+VLESS 节点支持通过 TCP 隧道转发 UDP；Clash 节点需设置 `udp: true`。Vision 分享链接默认拒绝 UDP/443，使用 `xtls-rprx-vision-udp443` 可放行；Clash 的 Vision 按其原有语义允许 UDP/443。SNI、Reality 公钥、short ID、指纹和 flow 都会保存在节点缓存中。
 
 > ```
 > Using default tag: latest
@@ -315,6 +347,8 @@ complete -c gg -x -a "(__fish_complete_gg_subcommand)"
     - [x] WS
     - [x] TLS
     - [x] GRPC
+    - [x] Reality（VLESS + TCP）
+    - [x] XTLS Vision（VLESS + TCP + TLS/Reality）
 - [x] Shadowsocks
     - [x] AEAD Ciphers
     - [x] Shadowsocks 2022
@@ -329,8 +363,25 @@ complete -c gg -x -a "(__fish_complete_gg_subcommand)"
 ### 订阅类型
 
 - [x] Base64 (v2rayN, etc.)
-- [x] Clash
+- [x] Clash/Mihomo（原始或 Base64 编码的 YAML/JSON，含 VLESS/Reality 节点）
 - [x] SIP008
 - [ ] Surge
 - [ ] Quantumult
 - [ ] Quantumult X
+
+### 从源码构建与测试
+
+需要 Go 1.25 或更新版本：
+
+```shell
+go build .
+go test ./...
+```
+
+完整程序需要 Linux。协议包的测试可在其他系统运行：`go test ./dialer/...`。设置 `XRAY_BIN` 为官方 Xray 可执行文件路径，可运行本机协议互通测试，包括 Reality/Vision、HTTPS 大包、UDP 和错误凭据拒绝：
+
+```shell
+XRAY_BIN=/path/to/xray go test ./dialer/v2ray -run XrayInterop -v
+```
+
+旧版 Xray 如不支持当前 Chrome 指纹，可在测试时加 `XRAY_FINGERPRINT=chrome_102`，或在节点链接中指定 `fp=chrome_102`。

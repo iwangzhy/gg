@@ -15,8 +15,6 @@ import (
 	_ "github.com/mzz2017/gg/dialer/v2ray"
 	_ "github.com/mzz2017/softwind/protocol/shadowsocks"
 	_ "github.com/mzz2017/softwind/protocol/trojanc"
-	_ "github.com/mzz2017/softwind/protocol/vless"
-	_ "github.com/mzz2017/softwind/protocol/vmess"
 )
 
 func main() {
