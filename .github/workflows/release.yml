@@ -1,13 +1,13 @@
 name: Release
 
 on:
-  release:
-    types: [prereleased]
   push:
     branches:
       - main
       - v*
       - dev*
+    tags:
+      - "v*"
     paths:
       - "**/*.go"
       - "go.mod"
@@ -20,6 +20,13 @@ on:
       - "go.mod"
       - "go.sum"
       - ".github/workflows/*.yml"
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
 
 jobs:
   build:
@@ -41,7 +48,7 @@ jobs:
           # END Linux ARM 5 6 7
       fail-fast: false
 
-    runs-on: ubuntu-22.04
+    runs-on: ubuntu-24.04
     env:
       GOOS: ${{ matrix.goos }}
       GOARCH: ${{ matrix.goarch }}
@@ -54,29 +61,24 @@ jobs:
         with:
           fetch-depth: 0
       - name: Get the version
-        id: get_version
-        env:
-          REF: ${{ github.ref }}
         run: |
-          if [[ "$REF" == "refs/tags/v"* ]]; then
-            tag=$(git describe --tags $(git rev-list --tags --max-count=1))
-            version=${tag}
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            version="$GITHUB_REF_NAME"
           else
             date=$(git log -1 --format="%cd" --date=short | sed s/-//g)
             count=$(git rev-list --count HEAD)
             commit=$(git rev-parse --short HEAD)
             version="test-$date.r${count}.$commit"
           fi
-          echo "VERSION=$version" >> "$GITHUB_OUTPUT"
-          echo "VERSION=$version" >> $GITHUB_ENV
+          echo "VERSION=$version" >> "$GITHUB_ENV"
 
       - name: Show workflow information
         id: get_filename
         run: |
-          export _NAME=$(jq ".[\"$GOOS-$GOARCH$GOARM\"].friendlyName" -r < release/friendly-filenames.json)
-          echo "GOOS: $GOOS, GOARCH: $GOARCH, RELEASE_NAME: $_NAME"
-          echo "ASSET_NAME=$_NAME" >> "$GITHUB_OUTPUT"
-          echo "ASSET_NAME=$_NAME" >> $GITHUB_ENV
+          asset_name=$(jq -er --arg target "$GOOS-$GOARCH$GOARM" '.[$target].friendlyName' release/friendly-filenames.json)
+          echo "GOOS: $GOOS, GOARCH: $GOARCH, RELEASE_NAME: $asset_name"
+          echo "ASSET_NAME=$asset_name" >> "$GITHUB_OUTPUT"
+          echo "ASSET_NAME=$asset_name" >> "$GITHUB_ENV"
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
@@ -91,33 +93,70 @@ jobs:
 
       - name: Build gg
         run: |
-          go build -v -o gg-$ASSET_NAME -trimpath -ldflags "-X github.com/mzz2017/gg/cmd.Version=${{ steps.get_version.outputs.VERSION }} -s -w -buildid=" .
-          upx gg-$ASSET_NAME
-      
-      - name: Smoking test
-        if: matrix.goarch == 'amd64'
-        run: ./gg-$ASSET_NAME --version
+          go build -v -o "gg-$ASSET_NAME" -trimpath -ldflags "-X github.com/mzz2017/gg/cmd.Version=$VERSION -s -w -buildid=" .
+          upx "gg-$ASSET_NAME"
 
-      - name: Signature
+      - name: Smoke test
+        if: matrix.goarch == 'amd64'
+        run: ./gg-"$ASSET_NAME" --version
+
+      - name: Checksums
         run: |
           FILE=./gg-$ASSET_NAME
           DGST=$FILE.dgst
-          openssl dgst -md5    $FILE | sed 's/([^)]*)//g' >>$DGST
-          openssl dgst -sha1   $FILE | sed 's/([^)]*)//g' >>$DGST
-          openssl dgst -sha256 $FILE | sed 's/([^)]*)//g' >>$DGST
-          openssl dgst -sha512 $FILE | sed 's/([^)]*)//g' >>$DGST
+          openssl dgst -md5    "$FILE" | sed 's/([^)]*)//g' > "$DGST"
+          openssl dgst -sha1   "$FILE" | sed 's/([^)]*)//g' >> "$DGST"
+          openssl dgst -sha256 "$FILE" | sed 's/([^)]*)//g' >> "$DGST"
+          openssl dgst -sha512 "$FILE" | sed 's/([^)]*)//g' >> "$DGST"
       - name: Upload files to Artifacts
         uses: actions/upload-artifact@v4
         with:
           name: gg-${{ steps.get_filename.outputs.ASSET_NAME }}
-          path: gg-${{ steps.get_filename.outputs.ASSET_NAME }}
+          path: |
+            gg-${{ steps.get_filename.outputs.ASSET_NAME }}
+            gg-${{ steps.get_filename.outputs.ASSET_NAME }}.dgst
+          if-no-files-found: error
 
-      - name: Upload files to GitHub release
-        uses: svenstaro/upload-release-action@v2
-        if: github.event_name == 'release'
+  publish:
+    needs: build
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    # 同一标签串行发布，避免重跑时同时修改草稿附件。
+    concurrency:
+      group: release-${{ github.ref }}
+      cancel-in-progress: false
+
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@v8
         with:
-          repo_token: ${{ secrets.GITHUB_TOKEN }}
-          file_glob: true
-          file: ./gg-${{ steps.get_filename.outputs.ASSET_NAME }}*
-          overwrite: true
-          tag: ${{ github.ref }}
+          pattern: gg-*
+          path: dist
+          merge-multiple: true
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          prerelease=false
+          if [[ "$TAG" == *-* ]]; then
+            prerelease=true
+          fi
+
+          if is_draft=$(gh release view "$TAG" --json isDraft --jq '.isDraft'); then
+            # 已发布的版本不覆盖；上传失败留下的草稿可以在重跑时继续完成。
+            if [[ "$is_draft" != true ]]; then
+              echo "Release $TAG is already published; skipping."
+              exit 0
+            fi
+          else
+            gh release create "$TAG" --verify-tag --draft \
+              --title "$TAG" --generate-notes --prerelease="$prerelease"
+          fi
+
+          gh release upload "$TAG" dist/* --clobber
+          gh release edit "$TAG" --draft=false --prerelease="$prerelease"

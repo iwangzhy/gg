@@ -382,7 +382,20 @@ complete -c gg -x -a "(__fish_complete_gg_subcommand)"
 
 ### Build and test from source
 
-Go 1.25 or newer is required:
+With Go 1.25 or newer, GNU Make, and OpenSSL installed, cross-compile all 5 supported Linux targets from Linux or macOS:
+
+```shell
+make
+make linux-arm64                 # Build one architecture
+make VERSION=v1.2.3 DIST_DIR=dist # Override the version and output directory
+make clean                       # Remove generated binaries and checksums
+```
+
+The default output directory is `dist/`, containing `gg-linux-x86_64`, `gg-linux-arm64`, `gg-linux-armv5`, `gg-linux-armv6`, and `gg-linux-armv7`. Each binary has a `.dgst` file matching the existing Release checksum format (MD5, SHA1, SHA256, and SHA512). Builds disable CGO and do not require UPX. The version defaults to the Git tag or commit with a `-dirty` suffix for uncommitted changes, or `dev` without Git metadata. Run `make help` for all commands.
+
+The application relies on Linux `ptrace`, so these binaries cannot run on macOS or Windows.
+
+To build for the current Linux machine and run tests:
 
 ```shell
 go build .

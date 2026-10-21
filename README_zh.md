@@ -371,7 +371,20 @@ complete -c gg -x -a "(__fish_complete_gg_subcommand)"
 
 ### 从源码构建与测试
 
-需要 Go 1.25 或更新版本：
+安装 Go 1.25 或更新版本、GNU Make 和 OpenSSL 后，可在 Linux 或 macOS 上一次交叉编译全部 5 种受支持的 Linux 架构：
+
+```shell
+make
+make linux-arm64                 # 只构建一个架构
+make VERSION=v1.2.3 DIST_DIR=dist # 指定版本号和输出目录
+make clean                       # 清理生成的可执行文件和校验文件
+```
+
+默认产物位于 `dist/`：`gg-linux-x86_64`、`gg-linux-arm64`、`gg-linux-armv5`、`gg-linux-armv6`、`gg-linux-armv7`，每个可执行文件附带与现有 Release 格式一致的 `.dgst` 校验文件（MD5、SHA1、SHA256、SHA512）。构建禁用 CGO，不要求安装 UPX；版本号默认取 Git 标签或提交号，存在未提交改动时带 `-dirty`，无 Git 信息时使用 `dev`。`make help` 可查看全部命令。
+
+程序运行依赖 Linux 的 `ptrace`，因此这些产物不能在 macOS 或 Windows 上运行。
+
+在 Linux 上构建本机版本并运行测试：
 
 ```shell
 go build .

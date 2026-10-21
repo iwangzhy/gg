@@ -3,3 +3,5 @@
 gg
 
 !completion/**
+.DS_Store
+/dist/
